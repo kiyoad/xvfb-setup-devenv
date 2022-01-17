@@ -1,0 +1,193 @@
+---
+# tasks file for xvfb
+
+- name: Enable source repo
+  ansible.builtin.apt_repository:
+    repo: '{{ item }}'
+    state: present
+  loop:
+    - 'deb-src http://ap-northeast-1.ec2.archive.ubuntu.com/ubuntu/ focal main restricted'
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+
+- name: Install pulseaudio build environment
+  ansible.builtin.apt:
+    pkg:
+    - pulseaudio
+    - libpulse-dev
+    - autoconf
+    - m4
+    - intltool
+
+- name: Build dep pulseaudio
+  ansible.builtin.apt:
+    state: build-dep
+    pkg:
+    - pulseaudio
+
+- name: Build pulseaudio
+  ansible.builtin.shell:
+    cmd: >
+      pulseaudio=$(pulseaudio --version | awk '{print $2}') &&
+      mkdir /tmp/buildenv &&
+      cd /tmp/buildenv &&
+      apt source pulseaudio &&
+      cd /tmp/buildenv/pulseaudio-${pulseaudio} &&
+      ./configure &&
+      cd /tmp/buildenv &&
+      git clone https://github.com/neutrinolabs/pulseaudio-module-xrdp.git &&
+      cd /tmp/buildenv/pulseaudio-module-xrdp &&
+      ./bootstrap &&
+      ./configure PULSE_DIR="/tmp/buildenv/pulseaudio-${pulseaudio}" &&
+      make
+  args:
+    creates: /tmp/buildenv/pulseaudio-module-xrdp/src/.libs/module-xrdp-sink.so
+
+- name: Install pulseaudio-module-xrdp libs
+  ansible.builtin.shell:
+    cmd: >
+      cd /tmp/buildenv/pulseaudio-module-xrdp/src/.libs &&
+      install -t "/var/lib/xrdp-pulseaudio-installer" -D -m 644 *.so
+  become: yes
+  args:
+    creates: /var/lib/xrdp-pulseaudio-installer/module-xrdp-sink.so
+
+- name: Install Language pack
+  ansible.builtin.apt:
+    install_recommends: no
+    pkg:
+    - language-pack-ja
+    - whois
+ 
+- name: Set locale and timezone
+  ansible.builtin.shell:
+    cmd: >
+      update-locale LANG=ja_JP.UTF-8 LANGUAGE="ja_JP:ja" &&
+      rm -f /etc/localtime &&
+      ln -s /usr/share/zoneinfo/Asia/Tokyo /etc/localtime &&
+      echo "Asia/Tokyo" > /etc/timezone &&
+      dpkg-reconfigure --frontend noninteractive tzdata &&
+      touch /etc/.ansible_set_localtime_timezone
+  become: yes
+  args:
+    creates: /etc/.ansible_set_localtime_timezone
+
+- name: Install xvfb
+  ansible.builtin.apt:
+    pkg:
+    - xvfb
+    - x11vnc
+    - xrdp
+    - ibus-mozc
+    - mozc-utils-gui
+    - fonts-ipafont
+    - fonts-ricty-diminished
+    - ubuntu-desktop
+
+- name: Install language packs
+  ansible.builtin.apt:
+    pkg:
+    - language-pack-gnome-ja
+    - libreoffice-l10n-ja
+    - language-pack-gnome-ja-base
+    - gnome-user-docs-ja
+    - libreoffice-help-ja
+    - libreoffice-help-common
+    - firefox-locale-ja
+    - gnome-getting-started-docs-ja
+    - thunderbird-locale-ja
+    - fonts-noto-cjk-extra
+
+- name: Install tools
+  ansible.builtin.apt:
+    pkg:
+    - apt-transport-https
+    - gnome-tweak-tool
+    - chromium-browser
+
+- name: Disable gdm service
+  ansible.builtin.service:
+    name: gdm
+    state: stopped
+    enabled: no
+
+- name: Install supervisor
+  ansible.builtin.apt:
+    pkg:
+    - supervisor
+
+- name: Disable supervisor service
+  ansible.builtin.service:
+    name: supervisor
+    state: stopped
+    enabled: no
+
+- name: get ssh user homedir
+  ansible.builtin.shell:
+    cmd: pwd
+  register: homedir
+  changed_when: no
+
+- name: Make supervisor config directory
+  ansible.builtin.file:
+    path: '{{ homedir.stdout }}/.supervisor/conf.d'
+    state: directory
+    mode: '0755'
+  become: no
+
+- name: Install supervisor config
+  ansible.builtin.template:
+    src: supervisord.conf
+    dest: '{{ homedir.stdout }}/.supervisor/supervisord.conf'
+    mode: '0644'
+  become: no
+  vars:
+    nonroot_supervisord_conf_dir: '{{ homedir.stdout }}/.supervisor'
+
+- name: Install pseudo Xvnc
+  ansible.builtin.template:
+    src: Xvnc
+    dest: /usr/bin/X11/Xvnc
+    mode: '0755'
+  vars:
+    nonroot_supervisord_conf_dir: '{{ homedir.stdout }}/.supervisor'
+
+- name: Copy xrdp config
+  ansible.builtin.copy:
+    src: '{{ item }}'
+    dest: '/etc/xrdp/{{ item }}'
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  loop:
+    - xrdp.ini
+    - sesman.ini
+
+- name: Disable pulseaudio autostart
+  ansible.builtin.file:
+    path: /etc/systemd/user/default.target.wants/pulseaudio.service
+    state: absent
+
+- name: Install Visual Studio Code repository
+  ansible.builtin.shell:
+    cmd: >
+      cd /tmp &&
+      wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg &&
+      install -o root -g root -m 644 packages.microsoft.gpg /etc/apt/trusted.gpg.d/ &&
+      sh -c 'echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/trusted.gpg.d/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list' &&
+      rm -f packages.microsoft.gpg
+  become: yes
+  args:
+    creates: /etc/apt/sources.list.d/vscode.list
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+
+- name: Install Visual Studio Code
+  ansible.builtin.apt:
+    pkg:
+    - code
